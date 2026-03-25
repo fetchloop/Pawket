@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="Pawket.vcxproj" Id="d84aa092-333f-4efe-ad8b-67e129239e12" />
+</Solution>
