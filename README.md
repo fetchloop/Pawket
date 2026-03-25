@@ -6,7 +6,7 @@ Pawket is a raw-socket packet sniffer for Windows with a live ImGui frontend. It
 
 ## Requirements
 
-- Windows, run as **Administrator**... raw sockets won't work without it.
+- Windows, run as **Administrator**, raw sockets won't work without it!
 - C++20 compiler (written and tested on MSVC 2026)
 - Direct3D 11
 
