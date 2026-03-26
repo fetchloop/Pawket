@@ -209,8 +209,10 @@ namespace Pawket
             bool needs_reindex = true;
             bool needs_resort = false;
 
-            // Rolling packet rate graph
-            static constexpr int RATE_HISTORY = 60;
+            // Rolling packet rate graph — 200 buckets at 100ms each = 20s of history
+            static constexpr int   RATE_HISTORY = 200;
+            static constexpr float RATE_INTERVAL = 0.1f;
+            static constexpr float GRAPH_HEIGHT = 50.0f;
             float rate_history[RATE_HISTORY]{};
             int   rate_history_offset = 0;
             float rate_last_second = 0.0f;
@@ -328,10 +330,10 @@ namespace Pawket
                     needs_resort = false;
                 }
 
-                // Advance the rate bucket once per second
+                // Advance the rate bucket every RATE_INTERVAL seconds
                 auto now_tick = std::chrono::steady_clock::now();
                 float elapsed = std::chrono::duration<float>(now_tick - rate_last_tick).count();
-                if (elapsed >= 1.0f)
+                if (elapsed >= RATE_INTERVAL)
                 {
                     rate_history[rate_history_offset] = rate_last_second;
                     rate_history_offset = (rate_history_offset + 1) % RATE_HISTORY;
@@ -521,7 +523,12 @@ namespace Pawket
                 float status_bar_height = ImGui::GetFrameHeightWithSpacing();
                 float min_inspect = 80.0f;
                 float max_inspect = io.DisplaySize.y * 0.6f;
-                float table_height = ImGui::GetContentRegionAvail().y - (selected_packet >= 0 ? inspect_height + 6.0f : 0.0f) - status_bar_height - 68.0f;
+                float graph_height = GRAPH_HEIGHT;
+                float table_height = ImGui::GetContentRegionAvail().y
+                    - (selected_packet >= 0 ? inspect_height + 6.0f : 0.0f)
+                    - status_bar_height
+                    - graph_height
+                    - ImGui::GetStyle().ItemSpacing.y * 4;
 
                 if (ImGui::BeginTable("Packets", 4,
                     ImGuiTableFlags_Borders |
@@ -621,6 +628,25 @@ namespace Pawket
                     }
 
                     ImGui::EndTable();
+                }
+
+                // Packet rate graph — sits between the table and the inspect panel
+                {
+                    float max_rate = *std::max_element(rate_history, rate_history + RATE_HISTORY);
+                    char rate_overlay[32];
+                    snprintf(rate_overlay, sizeof(rate_overlay), "%.0f pkt/s",
+                        rate_history[(rate_history_offset - 1 + RATE_HISTORY) % RATE_HISTORY]);
+
+                    ImGui::PlotLines(
+                        "##packetrate",
+                        rate_history,
+                        RATE_HISTORY,
+                        rate_history_offset,
+                        rate_overlay,
+                        0.0f,
+                        max_rate + 1.0f,
+                        ImVec2(-1.0f, graph_height)
+                    );
                 }
 
                 // Splitter
@@ -731,26 +757,6 @@ namespace Pawket
 
                     ImGui::PopFont();
                     ImGui::EndChild();
-                }
-
-                // Packet rate graph
-                {
-                    float max_rate = *std::max_element(rate_history, rate_history + RATE_HISTORY);
-                    char rate_overlay[32];
-                    snprintf(rate_overlay, sizeof(rate_overlay), "%.0f pkt/s",
-                        rate_history[(rate_history_offset - 1 + RATE_HISTORY) % RATE_HISTORY]);
-
-                    ImGui::Separator();
-                    ImGui::PlotHistogram(
-                        "##packetrate",
-                        rate_history,
-                        RATE_HISTORY,
-                        rate_history_offset,
-                        rate_overlay,
-                        0.0f,
-                        max_rate + 1.0f,
-                        ImVec2(-1.0f, 50.0f)
-                    );
                 }
 
                 // Status bar
