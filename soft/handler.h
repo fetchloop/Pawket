@@ -25,6 +25,7 @@ namespace Pawket
 	namespace Handler
 	{
 		std::string get_packet_protocol_string(const PACKET& packet);
+		bool setup_socket();
 		void setup_capture_thread(); // Forward declare to use in initialize(); as I don't feel like moving it.
 
 		inline std::atomic<bool> capture_running = true;
@@ -64,12 +65,10 @@ namespace Pawket
 		// Create a new Socket Handler instance.
 		inline SocketHandler socket_handler;
 
-		bool initialize()
+		bool setup_socket()
 		{
-			// Call WSAStartup with the needed params
-			WSADATA wsa_data{};
-			int wsa_result = WSAStartup(MAKEWORD(2, 2), &wsa_data);
-			if (wsa_result != 0) return false;
+			// Close any existing socket before creating a new one
+			socket_handler.close();
 
 			// Create a socket
 			SOCKET _socket = socket(AF_INET, SOCK_RAW, IPPROTO_IP);
@@ -79,7 +78,7 @@ namespace Pawket
 			socket_handler.set(_socket);
 
 			// Build sockaddr
-			sockaddr_in socket_address_in {};
+			sockaddr_in socket_address_in{};
 			socket_address_in.sin_addr = Pawket::IP_UTIL::get_local_ip();
 			socket_address_in.sin_family = AF_INET;
 			socket_address_in.sin_port = 0;
@@ -90,7 +89,7 @@ namespace Pawket
 
 			// Setup WSAIoctl params
 			DWORD rcvall_on = 1;
-			DWORD bytes_received {};
+			DWORD bytes_received{};
 
 			// Call WSAIoctl with proper parameters
 			int ioctl_result = WSAIoctl(
@@ -107,7 +106,18 @@ namespace Pawket
 
 			if (ioctl_result != 0) return false;
 
-			// Finally, set up the capture thread
+			return true;
+		}
+
+		bool initialize()
+		{
+			// Call WSAStartup with the needed params
+			WSADATA wsa_data{};
+			int wsa_result = WSAStartup(MAKEWORD(2, 2), &wsa_data);
+			if (wsa_result != 0) return false;
+
+			// Set up the socket, then the capture thread
+			if (!setup_socket()) return false;
 			setup_capture_thread();
 
 			return true;
@@ -122,7 +132,7 @@ namespace Pawket
 
 					std::vector<char> buffer{};
 					buffer.resize(65535); // 1 char = 1 byte, so it's fine.
-										  // vectors are slightly slower, but arrays are a headache.
+					// the comment that used to be here was removed due to misinformation :)
 
 					while (capture_running)
 					{
@@ -138,7 +148,7 @@ namespace Pawket
 
 						// Wait for data or timeout
 						int ready = select(0, &read_set, nullptr, nullptr, &timeout);
-						if (ready <= 0) continue; // Timeout or error, loop back and recheck capture_running
+						if (ready <= 0) continue; // Timeout or error, loop back.
 
 						int received = recv(socket_handler.get(), buffer.data(), buffer.size(), 0);
 						if (received == SOCKET_ERROR) break; // Break out of the loop if our socket is invalid.
@@ -191,7 +201,10 @@ namespace Pawket
 							packet.destination.port = ntohs(p_tcp_header->dest_port);
 
 							payload_length = received - payload_offset; // Update the payload length
-							packet.payload.assign(buffer.data() + payload_offset, buffer.data() + payload_offset + payload_length); // Populate the payload
+							
+							// Populate the payload data
+							packet.offset = payload_offset;
+							packet.length = payload_length;
 
 							break;
 
@@ -211,7 +224,9 @@ namespace Pawket
 
 							if (received <= payload_offset) continue;
 
-							packet.payload.assign(buffer.data() + payload_offset, buffer.data() + payload_offset + payload_length);
+							// Populate the payload data
+							packet.offset = payload_offset;
+							packet.length = payload_length;
 
 							break;
 
@@ -224,11 +239,15 @@ namespace Pawket
 							packet.source.port = 0;
 							packet.destination.port = 0;
 							payload_length = received - payload_offset;
-							packet.payload.assign(buffer.data() + payload_offset, buffer.data() + payload_offset + payload_length);
+							
+							// Populate the payload data
+							packet.offset = payload_offset;
+							packet.length = payload_length;
+
 							break;
 
 						case IPPROTO_IGMP:
-							// Same as ICMP — no ports, grab from the IP header boundary.
+							// Same as ICMP, no ports, grab from the IP header boundary.
 							payload_offset = next_header_offset;
 							if (received <= payload_offset) continue;
 
@@ -236,11 +255,15 @@ namespace Pawket
 							packet.source.port = 0;
 							packet.destination.port = 0;
 							payload_length = received - payload_offset;
-							packet.payload.assign(buffer.data() + payload_offset, buffer.data() + payload_offset + payload_length);
+							
+							// Populate the payload data
+							packet.offset = payload_offset;
+							packet.length = payload_length;
+
 							break;
 
 						case IPPROTO_SCTP:
-							// SCTP header: src port (2) + dst port (2) + vtag (4) + checksum (4) = 12 bytes.
+							// SCTP header: src port (2) + dst port (2) + vtag (4) + checksum (4) = 12 bytes
 							payload_offset = next_header_offset + 12;
 							if (received <= payload_offset) continue;
 
@@ -248,7 +271,11 @@ namespace Pawket
 							packet.source.port = ntohs(*reinterpret_cast<WORD*>(buffer.data() + next_header_offset));
 							packet.destination.port = ntohs(*reinterpret_cast<WORD*>(buffer.data() + next_header_offset + 2));
 							payload_length = received - payload_offset;
-							packet.payload.assign(buffer.data() + payload_offset, buffer.data() + payload_offset + payload_length);
+							
+							// Populate the payload data
+							packet.offset = payload_offset;
+							packet.length = payload_length;
+
 							break;
 
 						default:
@@ -260,9 +287,19 @@ namespace Pawket
 							packet.source.port = 0;
 							packet.destination.port = 0;
 							payload_length = received - payload_offset;
-							packet.payload.assign(buffer.data() + payload_offset, buffer.data() + payload_offset + payload_length);
+							
+							// Populate the payload data
+							packet.offset = payload_offset;
+							packet.length = payload_length;
+
 							break;
 						}
+
+						// Set the timestamp!
+						packet.timestamp = std::chrono::system_clock::now();
+
+						// Assign the raw frame data.
+						packet.raw.assign(buffer.data(), buffer.data() + received);
 
 						// Check if the packet should be printed.
 						if (Config::config.filter != Config::FilterType::ANY)
@@ -302,14 +339,15 @@ namespace Pawket
 							std::cout << "[+] Dest: " << dest_str << " : " << std::to_string(packet.destination.port) << "\n";
 							std::cout << "[+] Protocol: " << get_packet_protocol_string(packet) << "\n";
 
-							// Hex dump
+							// Hex dump of the payload region
 							char ascii[17]{};
+							const char* payload_start = packet.raw.data() + packet.offset;
 
 							std::cout << "[+] Payload:\n";
-							for (size_t i = 0; i < packet.payload.size(); i++)
+							for (size_t i = 0; i < packet.length; i++)
 							{
-								std::cout << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << (int)(BYTE)packet.payload[i] << " ";
-								ascii[i % 16] = std::isprint((unsigned char)packet.payload[i]) ? packet.payload[i] : '.';
+								std::cout << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << (int)(BYTE)payload_start[i] << " ";
+								ascii[i % 16] = std::isprint((unsigned char)payload_start[i]) ? payload_start[i] : '.';
 
 								if ((i + 1) % 16 == 0)
 								{
@@ -317,9 +355,9 @@ namespace Pawket
 								}
 							}
 
-							if (packet.payload.size() % 16 != 0)
+							if (packet.length % 16 != 0)
 							{
-								size_t remaining = packet.payload.size() % 16;
+								size_t remaining = packet.length % 16;
 								std::cout << std::string((16 - remaining) * 3, ' ');
 								ascii[remaining] = '\0';
 								std::cout << " | " << ascii << "\n";
@@ -332,14 +370,14 @@ namespace Pawket
 				}
 			);
 
-			if(Config::config.debug)
+			if (Config::config.debug)
 				std::cout << "[+] Setup packet capture thread.\n";
-			
+
 			return;
 		}
 
 		// Helper function to get the string value of the packets protocol.
-		std::string get_packet_protocol_string(const PACKET& packet)
+		inline std::string get_packet_protocol_string(const PACKET& packet)
 		{
 			switch (packet.protocol)
 			{

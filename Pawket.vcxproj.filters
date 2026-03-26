@@ -83,5 +83,11 @@
     <ClInclude Include="soft\gui\ext\imconfig.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="soft\util\time.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="soft\util\io.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

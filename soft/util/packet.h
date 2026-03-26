@@ -35,12 +35,17 @@ namespace Pawket
 
 	struct PACKET
 	{
+		// General
 		Pawket::Packet::Protocol protocol {};
 		Pawket::Packet::Endpoint source {};
 		Pawket::Packet::Endpoint destination {};
 		Pawket::Packet::Direction direction {};
+		std::chrono::system_clock::time_point timestamp {};
 
-		std::vector<char> payload;
+		// Payload
+		WORD offset {};
+		WORD length {};
+		std::vector<char> raw;
 	};
 }
 

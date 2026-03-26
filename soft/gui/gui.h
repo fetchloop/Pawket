@@ -4,14 +4,18 @@
 #include "ext/imgui.h"
 #include "ext/imgui_impl_win32.h"
 #include "ext/imgui_impl_dx11.h"
+
 #include <d3d11.h>
 #include <tchar.h>
 #include <algorithm>
 #include <cctype>
 #include <string>
+#include <chrono>
 
 #include "../util/list.h"
+#include "../util/time.h"
 #include "../handler.h"
+#include "../util/io.h"
 
 // DX11 state
 static ID3D11Device* g_pd3dDevice = nullptr;
@@ -32,13 +36,13 @@ static const char* protocol_str(Pawket::Packet::Protocol proto)
 {
     switch (proto)
     {
-        case Pawket::Packet::Protocol::TCP: return "TCP";
-        case Pawket::Packet::Protocol::UDP: return "UDP";
-        case Pawket::Packet::Protocol::ICMP: return "ICMP";
-        case Pawket::Packet::Protocol::IGMP: return "IGMP";
-        case Pawket::Packet::Protocol::SCTP: return "SCTP";
-        case Pawket::Packet::Protocol::OTHER: return "OTHER";
-        default: return "?";
+    case Pawket::Packet::Protocol::TCP: return "TCP";
+    case Pawket::Packet::Protocol::UDP: return "UDP";
+    case Pawket::Packet::Protocol::ICMP: return "ICMP";
+    case Pawket::Packet::Protocol::IGMP: return "IGMP";
+    case Pawket::Packet::Protocol::SCTP: return "SCTP";
+    case Pawket::Packet::Protocol::OTHER: return "OTHER";
+    default: return "?";
     }
 }
 
@@ -62,11 +66,12 @@ static std::string packet_search_key(const Pawket::PACKET& p)
     inet_ntop(AF_INET, &p.destination.addr, dst, INET_ADDRSTRLEN);
 
     std::string key;
-    key.reserve(80);
+    key.reserve(96);
     key += src; key += ':'; key += std::to_string(p.source.port); key += ' ';
     key += dst; key += ':'; key += std::to_string(p.destination.port); key += ' ';
     key += protocol_str(p.protocol); key += ' ';
-    key += (p.direction == Pawket::Packet::Direction::INCOMING ? "incoming" : "outgoing");
+    key += (p.direction == Pawket::Packet::Direction::INCOMING ? "incoming" : "outgoing"); key += ' ';
+    key += Pawket::Time::get_string_timestamp(p.timestamp);
     return key;
 }
 
@@ -125,9 +130,9 @@ static int dir_sort_key(Pawket::Packet::Direction dir)
 {
     switch (dir)
     {
-        case Pawket::Packet::Direction::INCOMING: return 0;
-        case Pawket::Packet::Direction::OUTGOING: return 1;
-        default: return 2;
+    case Pawket::Packet::Direction::INCOMING: return 0;
+    case Pawket::Packet::Direction::OUTGOING: return 1;
+    default: return 2;
     }
 }
 
@@ -163,7 +168,11 @@ namespace Pawket
             ImGuiIO& io = ImGui::GetIO(); (void)io;
             io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
-            ImGui::StyleColorsDark();
+            // Apply theme from config
+            if (Config::config.dark_mode)
+                ImGui::StyleColorsDark();
+            else
+                ImGui::StyleColorsLight();
 
             ImGuiStyle& style = ImGui::GetStyle();
             style.ScaleAllSizes(main_scale);
@@ -172,13 +181,21 @@ namespace Pawket
             ImGui_ImplWin32_Init(hwnd);
             ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
-            ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+            // Set clear color to match theme
+            ImVec4 clear_color = Config::config.dark_mode
+                ? ImVec4(0.1f, 0.1f, 0.1f, 1.0f)
+                : ImVec4(0.9f, 0.9f, 0.9f, 1.0f);
 
             // UI state
             bool recording = true;
             int selected_packet = -1;
             bool show_config = false;
+            bool show_export = false;
             float inspect_height = 200.0f;
+
+            // inner widths for hex and ascii panes, updated each frame.
+            float hex_inner_width = 0.0f;
+            float asc_inner_width = 0.0f;
 
             std::vector<PACKET> display_list;
             size_t last_seen{ 0 };
@@ -191,6 +208,13 @@ namespace Pawket
             std::vector<int> view_indices;
             bool needs_reindex = true;
             bool needs_resort = false;
+
+            // Rolling packet rate graph
+            static constexpr int RATE_HISTORY = 60;
+            float rate_history[RATE_HISTORY]{};
+            int   rate_history_offset = 0;
+            float rate_last_second = 0.0f;
+            auto  rate_last_tick = std::chrono::steady_clock::now();
 
             bool done = false;
             while (!done)
@@ -226,6 +250,9 @@ namespace Pawket
                 ImGui_ImplWin32_NewFrame();
                 ImGui::NewFrame();
 
+                // Track display list size before sync to measure new packets
+                size_t prev_display_size = display_list.size();
+
                 // Sync shared packet list
                 {
                     std::lock_guard<std::mutex> lock(Pawket::Packet::List::list_mutex);
@@ -240,6 +267,9 @@ namespace Pawket
                         needs_reindex = true;
                     }
                 }
+
+                // Accumulate new packets into the current rate bucket
+                rate_last_second += (float)(display_list.size() - prev_display_size);
 
                 // Cap to MAX_PACKETS
                 if ((int)display_list.size() > Config::config.MAX_PACKETS)
@@ -298,6 +328,17 @@ namespace Pawket
                     needs_resort = false;
                 }
 
+                // Advance the rate bucket once per second
+                auto now_tick = std::chrono::steady_clock::now();
+                float elapsed = std::chrono::duration<float>(now_tick - rate_last_tick).count();
+                if (elapsed >= 1.0f)
+                {
+                    rate_history[rate_history_offset] = rate_last_second;
+                    rate_history_offset = (rate_history_offset + 1) % RATE_HISTORY;
+                    rate_last_second = 0.0f;
+                    rate_last_tick = now_tick;
+                }
+
                 // Main window
                 ImGui::SetNextWindowPos(ImVec2(0, 0));
                 ImGui::SetNextWindowSize(io.DisplaySize);
@@ -311,22 +352,41 @@ namespace Pawket
                 // Toolbar
                 if (recording)
                 {
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.1f, 0.1f, 1.0f));
+                    ImGui::PushStyleColor(ImGuiCol_Button, Config::config.dark_mode
+                        ? ImVec4(0.6f, 0.1f, 0.1f, 1.0f)
+                        : ImVec4(0.7f, 0.15f, 0.15f, 0.7f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Config::config.dark_mode
+                        ? ImVec4(0.75f, 0.15f, 0.15f, 1.0f)
+                        : ImVec4(0.8f, 0.2f, 0.2f, 0.8f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, Config::config.dark_mode
+                        ? ImVec4(0.5f, 0.05f, 0.05f, 1.0f)
+                        : ImVec4(0.6f, 0.1f, 0.1f, 0.9f));
                     if (ImGui::Button("Stop Recording"))
                     {
                         recording = false;
                         Handler::capture_running = false;
                     }
-                    ImGui::PopStyleColor();
+                    ImGui::PopStyleColor(3);
                 }
                 else
                 {
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f, 0.5f, 0.1f, 1.0f));
+                    ImGui::PushStyleColor(ImGuiCol_Button, Config::config.dark_mode
+                        ? ImVec4(0.1f, 0.5f, 0.1f, 1.0f)
+                        : ImVec4(0.15f, 0.55f, 0.15f, 0.7f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Config::config.dark_mode
+                        ? ImVec4(0.15f, 0.65f, 0.15f, 1.0f)
+                        : ImVec4(0.2f, 0.65f, 0.2f, 0.8f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, Config::config.dark_mode
+                        ? ImVec4(0.05f, 0.4f, 0.05f, 1.0f)
+                        : ImVec4(0.1f, 0.45f, 0.1f, 0.9f));
                     if (ImGui::Button("Start Recording"))
                     {
                         Handler::capture_running = false;
                         if (Handler::capture_thread.joinable())
                             Handler::capture_thread.join();
+
+                        // Recreate the socket to discard any buffered packets from the OS
+                        Handler::setup_socket();
 
                         {
                             std::lock_guard<std::mutex> lock(Pawket::Packet::List::list_mutex);
@@ -344,12 +404,47 @@ namespace Pawket
                         Handler::capture_running = true;
                         Handler::setup_capture_thread();
                     }
-                    ImGui::PopStyleColor();
+                    ImGui::PopStyleColor(3);
                 }
 
                 ImGui::SameLine();
                 if (ImGui::Button("Config"))
                     show_config = !show_config;
+
+                ImGui::SameLine();
+                if (ImGui::Button("Export"))
+                    show_export = !show_export;
+
+                ImGui::SameLine();
+                if (ImGui::Button("Import PCAP"))
+                {
+                    // Stop recording and join the thread before importing
+                    Handler::capture_running = false;
+                    if (Handler::capture_thread.joinable())
+                        Handler::capture_thread.join();
+
+                    {
+                        std::lock_guard<std::mutex> lock(Pawket::Packet::List::list_mutex);
+                        Pawket::Packet::List::packet_list.clear();
+                        last_seen = 0;
+                    }
+
+                    display_list.clear();
+                    view_indices.clear();
+                    selected_packet = -1;
+                    needs_reindex = true;
+                    needs_resort = false;
+                    recording = false;
+
+                    // Reset the rate graph so imported data doesnt mess it up
+                    std::fill(rate_history, rate_history + RATE_HISTORY, 0.0f);
+                    rate_history_offset = 0;
+                    rate_last_second = 0.0f;
+                    rate_last_tick = std::chrono::steady_clock::now();
+
+                    Pawket::Pcap::import(hwnd);
+                }
+
                 ImGui::SameLine();
                 ImGui::Text("Packets: %d / %d  |  Visible: %d",
                     (int)display_list.size(), Config::config.MAX_PACKETS,
@@ -371,6 +466,22 @@ namespace Pawket
                     ImGui::SameLine();
                     if (ImGui::RadioButton("On", Config::config.debug == TRUE)) Config::config.debug = !Config::config.debug;
 
+                    ImGui::Text("Theme:");
+                    ImGui::SameLine();
+                    if (ImGui::RadioButton("Dark", Config::config.dark_mode))
+                    {
+                        Config::config.dark_mode = true;
+                        ImGui::StyleColorsDark();
+                        clear_color = ImVec4(0.1f, 0.1f, 0.1f, 1.0f);
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::RadioButton("Light", !Config::config.dark_mode))
+                    {
+                        Config::config.dark_mode = false;
+                        ImGui::StyleColorsLight();
+                        clear_color = ImVec4(0.9f, 0.9f, 0.9f, 1.0f);
+                    }
+
                     ImGui::Text("Max Packets:");
                     ImGui::SameLine();
                     ImGui::SetNextItemWidth(120);
@@ -379,9 +490,26 @@ namespace Pawket
                     ImGui::Separator();
                 }
 
+                // Export panel
+                if (show_export)
+                {
+                    if (ImGui::Button("Export PCAP"))
+                    {
+                        Pawket::Pcap::export_pcap(display_list);
+                        show_export = false;
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Export JSON"))
+                    {
+                        Pawket::Pcap::export_json(display_list);
+                        show_export = false;
+                    }
+                    ImGui::Separator();
+                }
+
                 // Search bar
                 ImGui::SetNextItemWidth(-1.0f);
-                if (ImGui::InputTextWithHint("##search", "Search by IP, port, protocol, direction...",
+                if (ImGui::InputTextWithHint("##search", "Search by IP, port, protocol, direction, time...",
                     search_buf, sizeof(search_buf)))
                 {
                     search_str = search_buf;
@@ -393,7 +521,7 @@ namespace Pawket
                 float status_bar_height = ImGui::GetFrameHeightWithSpacing();
                 float min_inspect = 80.0f;
                 float max_inspect = io.DisplaySize.y * 0.6f;
-                float table_height = ImGui::GetContentRegionAvail().y - (selected_packet >= 0 ? inspect_height + 6.0f : 0.0f) - status_bar_height;
+                float table_height = ImGui::GetContentRegionAvail().y - (selected_packet >= 0 ? inspect_height + 6.0f : 0.0f) - status_bar_height - 68.0f;
 
                 if (ImGui::BeginTable("Packets", 4,
                     ImGuiTableFlags_Borders |
@@ -448,28 +576,28 @@ namespace Pawket
                             ImVec4 row_col{};
                             switch (p.protocol)
                             {
-                                case Pawket::Packet::Protocol::TCP:
-                                    row_col = (p.direction == Pawket::Packet::Direction::INCOMING)
-                                        ? ImVec4(0.05f, 0.25f, 0.2f, 0.4f)
-                                        : ImVec4(0.05f, 0.15f, 0.3f, 0.4f);
-                                    break;
-                                case Pawket::Packet::Protocol::UDP:
-                                    row_col = (p.direction == Pawket::Packet::Direction::INCOMING)
-                                        ? ImVec4(0.3f, 0.15f, 0.05f, 0.4f)
-                                        : ImVec4(0.3f, 0.25f, 0.05f, 0.4f);
-                                    break;
-                                case Pawket::Packet::Protocol::ICMP:
-                                    row_col = ImVec4(0.25f, 0.05f, 0.25f, 0.4f);
-                                    break;
-                                case Pawket::Packet::Protocol::IGMP:
-                                    row_col = ImVec4(0.05f, 0.25f, 0.05f, 0.4f);
-                                    break;
-                                case Pawket::Packet::Protocol::SCTP:
-                                    row_col = ImVec4(0.2f, 0.2f, 0.05f, 0.4f);
-                                    break;
-                                default:
-                                    row_col = ImVec4(0.15f, 0.15f, 0.15f, 0.4f);
-                                    break;
+                            case Pawket::Packet::Protocol::TCP:
+                                row_col = (p.direction == Pawket::Packet::Direction::INCOMING)
+                                    ? ImVec4(0.05f, 0.25f, 0.2f, 0.4f)
+                                    : ImVec4(0.05f, 0.15f, 0.3f, 0.4f);
+                                break;
+                            case Pawket::Packet::Protocol::UDP:
+                                row_col = (p.direction == Pawket::Packet::Direction::INCOMING)
+                                    ? ImVec4(0.3f, 0.15f, 0.05f, 0.4f)
+                                    : ImVec4(0.3f, 0.25f, 0.05f, 0.4f);
+                                break;
+                            case Pawket::Packet::Protocol::ICMP:
+                                row_col = ImVec4(0.25f, 0.05f, 0.25f, 0.4f);
+                                break;
+                            case Pawket::Packet::Protocol::IGMP:
+                                row_col = ImVec4(0.05f, 0.25f, 0.05f, 0.4f);
+                                break;
+                            case Pawket::Packet::Protocol::SCTP:
+                                row_col = ImVec4(0.2f, 0.2f, 0.05f, 0.4f);
+                                break;
+                            default:
+                                row_col = ImVec4(0.15f, 0.15f, 0.15f, 0.4f);
+                                break;
                             }
                             ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(row_col));
                         }
@@ -525,49 +653,104 @@ namespace Pawket
                     inet_ntop(AF_INET, &p.source.addr, source_str, INET_ADDRSTRLEN);
                     inet_ntop(AF_INET, &p.destination.addr, dest_str, INET_ADDRSTRLEN);
 
-                    ImGui::Text("Packet #%d  |  %s:%d  ->  %s:%d  |  %s  |  %s  |  %d bytes",
+                    ImGui::Text("Packet #%d  |  %s:%d  ->  %s:%d  |  %s  |  %s  |  %d bytes  |  %s",
                         selected_packet,
                         source_str, p.source.port,
                         dest_str, p.destination.port,
                         protocol_str(p.protocol),
                         p.direction == Pawket::Packet::Direction::INCOMING ? "Incoming" : "Outgoing",
-                        (int)p.payload.size()
+                        (int)p.length,
+                        Pawket::Time::get_string_timestamp(p.timestamp).c_str()
                     );
 
-                    ImGui::BeginChild("HexDump",
-                        ImVec2(0, inspect_height - ImGui::GetFrameHeightWithSpacing() * 2), true
+                    float available_width = ImGui::GetContentRegionAvail().x;
+                    float spacing = ImGui::GetStyle().ItemSpacing.x;
+                    float hex_width = (available_width - spacing) * 0.65f;
+                    float ascii_width = (available_width - spacing) * 0.35f;
+
+                    // Every pane calculates its own bytes_per_row by itself.
+                    float hex_char_w = ImGui::CalcTextSize("XX ").x;
+                    float asc_char_w = ImGui::CalcTextSize("X").x;
+                    int bytes_per_row_hex = (std::max)(1, (int)((hex_inner_width > 0.0f ? hex_inner_width - hex_char_w * 0.5f : 8.0f) / hex_char_w));
+                    int bytes_per_row_asc = (std::max)(1, (int)(asc_inner_width > 0.0f ? asc_inner_width / asc_char_w : 8));
+
+                    std::vector<char> hex_buf(bytes_per_row_hex * 3 + 1);
+                    std::vector<char> asc_buf(bytes_per_row_asc + 1);
+
+                    ImGui::BeginChild("HexPane",
+                        ImVec2(hex_width, inspect_height - ImGui::GetFrameHeightWithSpacing() * 2), true
                     );
+
+                    // Update cached inner width for next frame.
+                    hex_inner_width = ImGui::GetContentRegionAvail().x;
 
                     ImGui::PushFont(ImGui::GetIO().Fonts->Fonts.Size > 1 ? ImGui::GetIO().Fonts->Fonts[1] : ImGui::GetIO().Fonts->Fonts[0]);
 
-                    size_t size = p.payload.size();
-                    for (size_t row = 0; row < size; row += 16)
+                    const char* payload_start = p.raw.data() + p.offset;
+                    size_t size = p.length;
+                    for (size_t row = 0; row < size; row += bytes_per_row_hex)
                     {
-                        char line[128]{};
-                        char hex_part[64]{};
-                        char asc_part[17]{};
-
-                        size_t cols = (row + 16 <= size) ? 16 : (size - row);
+                        size_t cols = (row + bytes_per_row_hex <= size) ? bytes_per_row_hex : (size - row);
 
                         int hex_pos = 0;
-                        for (size_t col = 0; col < 16; col++)
+                        for (size_t col = 0; col < (size_t)bytes_per_row_hex; col++)
                         {
                             if (col < cols)
-                                hex_pos += snprintf(hex_part + hex_pos, sizeof(hex_part) - hex_pos, "%02X ", (BYTE)p.payload[row + col]);
+                                hex_pos += snprintf(hex_buf.data() + hex_pos, hex_buf.size() - hex_pos, "%02X ", (BYTE)payload_start[row + col]);
                             else
-                                hex_pos += snprintf(hex_part + hex_pos, sizeof(hex_part) - hex_pos, "   ");
+                                hex_pos += snprintf(hex_buf.data() + hex_pos, hex_buf.size() - hex_pos, "   ");
                         }
 
-                        for (size_t col = 0; col < cols; col++)
-                            asc_part[col] = std::isprint((unsigned char)p.payload[row + col]) ? p.payload[row + col] : '.';
-                        asc_part[cols] = '\0';
-
-                        snprintf(line, sizeof(line), "%s| %s", hex_part, asc_part);
-                        ImGui::TextUnformatted(line);
+                        ImGui::TextUnformatted(hex_buf.data());
                     }
 
                     ImGui::PopFont();
                     ImGui::EndChild();
+
+                    ImGui::SameLine();
+
+                    ImGui::BeginChild("AsciiPane",
+                        ImVec2(ascii_width, inspect_height - ImGui::GetFrameHeightWithSpacing() * 2), true
+                    );
+
+                    // Update cached inner width for next frame.
+                    asc_inner_width = ImGui::GetContentRegionAvail().x;
+
+                    ImGui::PushFont(ImGui::GetIO().Fonts->Fonts.Size > 1 ? ImGui::GetIO().Fonts->Fonts[1] : ImGui::GetIO().Fonts->Fonts[0]);
+
+                    for (size_t row = 0; row < size; row += bytes_per_row_asc)
+                    {
+                        size_t cols = (row + bytes_per_row_asc <= size) ? bytes_per_row_asc : (size - row);
+
+                        for (size_t col = 0; col < cols; col++)
+                            asc_buf[col] = std::isprint((unsigned char)payload_start[row + col]) ? payload_start[row + col] : '.';
+                        asc_buf[cols] = '\0';
+
+                        ImGui::TextUnformatted(asc_buf.data());
+                    }
+
+                    ImGui::PopFont();
+                    ImGui::EndChild();
+                }
+
+                // Packet rate graph
+                {
+                    float max_rate = *std::max_element(rate_history, rate_history + RATE_HISTORY);
+                    char rate_overlay[32];
+                    snprintf(rate_overlay, sizeof(rate_overlay), "%.0f pkt/s",
+                        rate_history[(rate_history_offset - 1 + RATE_HISTORY) % RATE_HISTORY]);
+
+                    ImGui::Separator();
+                    ImGui::PlotHistogram(
+                        "##packetrate",
+                        rate_history,
+                        RATE_HISTORY,
+                        rate_history_offset,
+                        rate_overlay,
+                        0.0f,
+                        max_rate + 1.0f,
+                        ImVec2(-1.0f, 50.0f)
+                    );
                 }
 
                 // Status bar

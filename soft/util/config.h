@@ -27,6 +27,7 @@ namespace Pawket
 			FilterType filter;
 			int MAX_PACKETS = 100;
 			bool debug{};
+			bool dark_mode = true;
 		};
 
 		inline Config config;
@@ -67,6 +68,10 @@ namespace Pawket
 					{
 						config.debug = value == "true";
 					}
+					else if (key == "dark_mode")
+					{
+						config.dark_mode = value == "true";
+					}
 				}
 
 				file.close();
@@ -78,7 +83,7 @@ namespace Pawket
 		void create()
 		{
 			std::filesystem::path config_path = get_config_path();
-			
+
 			// Create the actual config folder
 			std::filesystem::create_directories(config_path.parent_path());
 
@@ -89,7 +94,8 @@ namespace Pawket
 			file << "filter=" << get_filter_string_from_filter(config.filter) << "\n";
 			file << "MAX_PACKETS=" << config.MAX_PACKETS << "\n";
 			file << "debug=" << (config.debug ? "true" : "false") << "\n";
-			
+			file << "dark_mode=" << (config.dark_mode ? "true" : "false") << "\n";
+
 			if (config.debug)
 				std::cout << "[+] Successfully created config.\n";
 		}; // Save the current config into a file on the disk.
@@ -110,14 +116,14 @@ namespace Pawket
 		{
 			switch (filter_type)
 			{
-				case FilterType::ANY:
-					return "ANY";
-				case FilterType::INCOMING:
-					return "INCOMING";
-				case FilterType::OUTGOING:
-					return "OUTGOING";
-				default:
-					return "ANY";
+			case FilterType::ANY:
+				return "ANY";
+			case FilterType::INCOMING:
+				return "INCOMING";
+			case FilterType::OUTGOING:
+				return "OUTGOING";
+			default:
+				return "ANY";
 			}
 		}
 

@@ -153,9 +153,11 @@
     <ClInclude Include="soft\handler.h" />
     <ClInclude Include="soft\struct\ip_header.h" />
     <ClInclude Include="soft\util\config.h" />
+    <ClInclude Include="soft\util\io.h" />
     <ClInclude Include="soft\util\ip_util.h" />
     <ClInclude Include="soft\util\list.h" />
     <ClInclude Include="soft\util\packet.h" />
+    <ClInclude Include="soft\util\time.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
