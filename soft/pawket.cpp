@@ -1,10 +1,9 @@
 #include <iostream>
 
 #include "util/config.h"
-
 #include "handler.h"
-
 #include "gui/gui.h"
+#include "util/elevation.h"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "d3d11.lib")
@@ -18,17 +17,14 @@ BOOL is_elevated();
 
 int main()
 {
+	// If a relaunch was triggered (or UAC was declined), exit this instance.
+	if (Pawket::Elevation::request_elevation())
+		return 0;
+
 	// First try to load the config.
 	// If it doesn't exist, create a new one.
 	if (!Config::load(Config::get_config_path()))
 		Config::create();
-
-	// Check program elevation
-	if (!is_elevated())
-	{
-		MessageBoxA(nullptr, "Pawket requires administrator permissions to run.", "Pawket", MB_OK);
-		return 1;
-	}
 
 	if (!Handler::initialize())
 	{
@@ -50,23 +46,4 @@ int main()
 
 	WSACleanup();
 	return 0;
-}
-
-BOOL is_elevated()
-{
-	BOOL f_ret = FALSE;
-	HANDLE h_token = NULL;
-
-	if(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &h_token))
-	{
-		TOKEN_ELEVATION elevation;
-		DWORD cb_size = sizeof(TOKEN_ELEVATION);
-		if (GetTokenInformation(h_token, TokenElevation, &elevation, sizeof(elevation), &cb_size))
-			f_ret = elevation.TokenIsElevated;
-	}
-
-	if (h_token)
-		CloseHandle(h_token);
-
-	return f_ret;
 }

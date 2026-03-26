@@ -153,6 +153,7 @@
     <ClInclude Include="soft\handler.h" />
     <ClInclude Include="soft\struct\ip_header.h" />
     <ClInclude Include="soft\util\config.h" />
+    <ClInclude Include="soft\util\elevation.h" />
     <ClInclude Include="soft\util\io.h" />
     <ClInclude Include="soft\util\ip_util.h" />
     <ClInclude Include="soft\util\list.h" />

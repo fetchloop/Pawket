@@ -632,10 +632,15 @@ namespace Pawket
 
                 // Packet rate graph
                 {
+                    // The last 10 buckets are summed up to create a smoothed value.
+                    float per_second = 0.0f;
+                    for (int k = 1; k <= 10; k++)
+                        per_second += rate_history[(rate_history_offset - k + RATE_HISTORY) % RATE_HISTORY];
+
                     float max_rate = *std::max_element(rate_history, rate_history + RATE_HISTORY);
+                    float current_bucket = rate_history[(rate_history_offset - 1 + RATE_HISTORY) % RATE_HISTORY];
                     char rate_overlay[32];
-                    snprintf(rate_overlay, sizeof(rate_overlay), "%.0f pkt/s",
-                        rate_history[(rate_history_offset - 1 + RATE_HISTORY) % RATE_HISTORY]);
+                    snprintf(rate_overlay, sizeof(rate_overlay), "%.1f pkt/s", per_second);
 
                     ImGui::PlotLines(
                         "##packetrate",
@@ -647,6 +652,9 @@ namespace Pawket
                         max_rate + 1.0f,
                         ImVec2(-1.0f, graph_height)
                     );
+
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%.1f pkt / 100ms", current_bucket);
                 }
 
                 // Splitter

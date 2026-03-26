@@ -89,5 +89,8 @@
     <ClInclude Include="soft\util\io.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="soft\util\elevation.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
