@@ -209,7 +209,7 @@ namespace Pawket
             bool needs_reindex = true;
             bool needs_resort = false;
 
-            // Rolling packet rate graph — 200 buckets at 100ms each = 20s of history
+            // Rolling packet rate graph
             static constexpr int   RATE_HISTORY = 200;
             static constexpr float RATE_INTERVAL = 0.1f;
             static constexpr float GRAPH_HEIGHT = 50.0f;
@@ -630,7 +630,7 @@ namespace Pawket
                     ImGui::EndTable();
                 }
 
-                // Packet rate graph — sits between the table and the inspect panel
+                // Packet rate graph
                 {
                     float max_rate = *std::max_element(rate_history, rate_history + RATE_HISTORY);
                     char rate_overlay[32];
